@@ -9,6 +9,7 @@ from pathlib import Path
 
 import serial
 from serial.tools import list_ports
+from ppg_io import open_serial, parse_sample
 
 
 def main() -> int:
@@ -40,7 +41,7 @@ def main() -> int:
 
     count = 0
     try:
-        with serial.Serial(args.port, 115200, timeout=0.25) as stream:
+        with open_serial(args.port) as stream:
             # Some ESP32 boards reset automatically when the serial port opens.
             print(f"Connected to {args.port}; waiting for ESP32 to start...")
             time.sleep(2)
@@ -55,13 +56,13 @@ def main() -> int:
                 try:
                     while args.seconds is None or time.monotonic() - start < args.seconds:
                         line = stream.readline().decode("ascii", errors="ignore").strip()
-                        fields = line.split(",")
-                        if len(fields) != 3 or not all(value.isdecimal() for value in fields):
+                        sample = parse_sample(line)
+                        if sample is None:
                             if line.startswith("# ERROR"):
                                 print(line, file=sys.stderr)
                             continue
 
-                        writer.writerow([int(value) for value in fields])
+                        writer.writerow(sample)
                         count += 1
                         if count % 100 == 0:
                             file.flush()

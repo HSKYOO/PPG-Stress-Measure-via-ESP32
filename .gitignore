@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .DS_Store
 ppg_raw_*.csv
+data/
+tmp/
