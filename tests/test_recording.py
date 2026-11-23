@@ -73,6 +73,41 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(first.csv_path.read_bytes(), original)
         self.assertEqual(len(list(Path(self.directory.name).glob("*.csv"))), 2)
 
+    def test_split_files_at_minute_boundaries_preserve_continuous_time(self):
+        rec = self.create(split_segments=True)
+        for elapsed, sample in [(0, 1), (59.999, 2), (60, 3), (119.999, 4), (120, 5), (179.999, 6)]:
+            self.now = 1000 + elapsed
+            self.assertTrue(rec.add((sample, 123, 456)))
+        self.now = 1180
+        self.assertFalse(rec.add((7, 123, 456)))
+        rec.finish("completed", "duration_elapsed")
+        self.assertEqual(len(rec.csv_paths), 3)
+        all_rows = []
+        for index, path in enumerate(rec.csv_paths, 1):
+            with path.open(encoding="utf-8", newline="") as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual({row["segment"] for row in rows}, {str(index)})
+            self.assertEqual(len(rows), 2)
+            all_rows.extend(rows)
+        self.assertEqual([int(row["sample"]) for row in all_rows], list(range(1, 7)))
+        self.assertEqual([float(row["elapsed_seconds"]) for row in all_rows], [0, 59.999, 60, 119.999, 120, 179.999])
+        meta = json.loads(rec.meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["csv_files"], [path.name for path in rec.csv_paths])
+        self.assertEqual(meta["segment_samples"], [2, 2, 2])
+        self.assertEqual(meta["samples"], 6)
+
+    def test_split_interruption_preserves_completed_and_partial_segments(self):
+        rec = self.create(split_segments=True)
+        rec.add((1, 11, 22))
+        self.now += 61
+        rec.add((2, 33, 44))
+        rec.finish("interrupted", "operator_disconnect")
+        self.assertTrue(all(file.closed for file in rec.files))
+        self.assertEqual(rec.meta["segment_samples"], [1, 1, 0])
+        self.assertEqual(rec.meta["status"], "interrupted")
+        with rec.csv_paths[2].open(encoding="utf-8", newline="") as file:
+            self.assertEqual(list(csv.DictReader(file)), [])
+
     def test_invalid_settings_do_not_create_files(self):
         for kwargs in (dict(segment_seconds=float("nan")), dict(segment_seconds=0), dict(segment_seconds=float("inf")),
                        dict(segment_count=0), dict(segment_count=1.5), dict(condition="other")):

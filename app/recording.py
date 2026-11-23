@@ -16,7 +16,7 @@ def utc_now():
 
 class Recording:
     def __init__(self, output, participant, operator, condition, segment_seconds=60,
-                 segment_count=3, source="serial", clock=time.monotonic):
+                 segment_count=3, source="serial", clock=time.monotonic, split_segments=False):
         if not participant.strip() or not operator.strip():
             raise ValueError("참가자 ID와 측정자 ID를 입력하세요.")
         if condition not in ("rest", "stress"):
@@ -44,15 +44,27 @@ class Recording:
                          started_at_utc=utc_now(), status="recording", samples=0,
                          timestamp_basis="PC receive time; firmware sends no timestamp",
                          baud_rate=115200, firmware_fields=["sample", "red", "ir"])
-        self.file = self.csv_path.open("x", newline="", encoding="utf-8")
+        self.split_segments = split_segments
+        self.csv_paths = ([directory / f"{self.session_id}_segment{index:02d}.csv"
+                           for index in range(1, segment_count + 1)] if split_segments else [self.csv_path])
+        self.csv_path = self.csv_paths[0]
+        self.meta.update(csv_files=[path.name for path in self.csv_paths],
+                         segment_samples=[0] * segment_count, split_segments=split_segments)
+        self.files = []
+        self.writers = []
         try:
-            self.writer = csv.writer(self.file)
-            self.writer.writerow(["session_id", "participant_id", "operator_id", "condition",
-                                  "segment", "received_at_utc", "elapsed_seconds", "sample", "red", "ir"])
-            self.file.flush()
+            for path in self.csv_paths:
+                file = path.open("x", newline="", encoding="utf-8")
+                self.files.append(file)
+                writer = csv.writer(file)
+                self.writers.append(writer)
+                writer.writerow(["session_id", "participant_id", "operator_id", "condition",
+                                 "segment", "received_at_utc", "elapsed_seconds", "sample", "red", "ir"])
+                file.flush()
             self._save_meta()
         except BaseException:
-            self.file.close()
+            for file in self.files:
+                file.close()
             raise
 
     def _save_meta(self):
@@ -73,12 +85,15 @@ class Recording:
         if elapsed >= self.duration:
             return False
         segment = int(elapsed // self.meta["segment_seconds"]) + 1
-        self.writer.writerow([self.session_id, self.meta["participant_id"],
+        writer = self.writers[segment - 1 if self.split_segments else 0]
+        writer.writerow([self.session_id, self.meta["participant_id"],
                               self.meta["operator_id"], self.meta["condition"], segment,
                               received_at or utc_now(), f"{elapsed:.9f}", *sample])
         self.count += 1
+        self.meta["segment_samples"][segment - 1] += 1
         if current - self.last_flush >= 1:
-            self.file.flush()
+            for file in self.files:
+                file.flush()
             self.last_flush = current
         return True
 
@@ -88,9 +103,11 @@ class Recording:
         if status not in ("completed", "interrupted"):
             raise ValueError("Invalid terminal status")
         try:
-            self.file.flush()
+            for file in self.files:
+                file.flush()
         finally:
-            self.file.close()
+            for file in self.files:
+                file.close()
             self.closed = True
         self.meta.update(status=status, reason=reason, samples=self.count,
                          ended_at_utc=utc_now(), elapsed_seconds=self.elapsed())
